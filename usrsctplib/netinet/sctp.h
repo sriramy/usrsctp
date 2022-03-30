@@ -380,8 +380,9 @@ struct sctp_paramhdr {
 #define SCTP_CAUSE_REQUEST_REFUSED	0x00a4
 
 /* Error causes from nat-draft */
-#define SCTP_CAUSE_NAT_COLLIDING_STATE  0x00b0
-#define SCTP_CAUSE_NAT_MISSING_STATE    0x00b1
+#define SCTP_CAUSE_NAT_COLLIDING_STATE  	0x00b0
+#define SCTP_CAUSE_NAT_MISSING_STATE    	0x00b1
+#define SCTP_CAUSE_NAT_PORT_COLLIDING_STATE 0x00b2
 
 /* Error causes from RFC4895 */
 #define SCTP_CAUSE_UNSUPPORTED_HMACID	0x0105
@@ -491,6 +492,9 @@ struct sctp_error_auth_invalid_hmac {
 #define SCTP_FROM_MIDDLE_BOX	SCTP_HAD_NO_TCB
 #define SCTP_BADCRC		0x02
 #define SCTP_PACKET_TRUNCATED	0x04
+
+/* SCTP NAT lite */
+#define SCTP_FROM_MIDDLE_BOX_LITE 0x08
 
 /* Flag for ECN -CWR */
 #define SCTP_CWR_REDUCE_OVERRIDE 0x01

@@ -76,6 +76,8 @@ int sctp_v4src_match_nexthop(struct sctp_ifa *sifa, sctp_route_t *ro);
 
 void sctp_send_initiate(struct sctp_inpcb *, struct sctp_tcb *, int);
 
+void sctp_send_initiate_rj(struct sctp_inpcb *, struct sctp_tcb *, struct sctp_nets *, int);
+
 void
 sctp_send_initiate_ack(struct sctp_inpcb *, struct sctp_tcb *,
                        struct sctp_nets *, struct mbuf *,
@@ -89,7 +91,7 @@ sctp_send_initiate_ack(struct sctp_inpcb *, struct sctp_tcb *,
 
 struct mbuf *
 sctp_arethere_unrecognized_parameters(struct mbuf *, int, int *,
-                                      struct sctp_chunkhdr *, int *, int *);
+                                      struct sctp_chunkhdr *, int *, int *, int *);
 void sctp_queue_op_err(struct sctp_tcb *, struct mbuf *);
 
 int

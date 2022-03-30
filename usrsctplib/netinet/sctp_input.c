@@ -427,7 +427,7 @@ sctp_process_init_ack(struct mbuf *m, int iphlen, int offset,
 	op_err = sctp_arethere_unrecognized_parameters(m,
 						       (offset + sizeof(struct sctp_init_chunk)),
 						       &abort_flag, (struct sctp_chunkhdr *)cp,
-						       &nat_friendly, &cookie_found);
+						       &nat_friendly, &cookie_found, NULL);
 	if (abort_flag) {
 		/* Send an abort and notify peer */
 		sctp_abort_an_association(stcb->sctp_ep, stcb, op_err, false, SCTP_SO_NOT_LOCKED);
@@ -801,6 +801,17 @@ sctp_handle_nat_missing_state(struct sctp_tcb *stcb,
 	return (1);
 }
 
+static int
+sctp_handle_nat_port_colliding_state(struct sctp_tcb *stcb,
+					  struct sctp_nets *net)
+{
+	/*
+	 * Return 0 means we want you to proceed with the abort
+	 * non-zero means no abort processing.
+	 */
+	return (0);
+}
+
 /* Returns 1 if the stcb was aborted, 0 otherwise */
 static int
 sctp_handle_abort(struct sctp_abort_chunk *abort,
@@ -836,6 +847,12 @@ sctp_handle_abort(struct sctp_abort_chunk *abort,
 			SCTPDBG(SCTP_DEBUG_INPUT2, "Received missing state, ABORT flags:%x\n",
 			                           abort->ch.chunk_flags);
 			if (sctp_handle_nat_missing_state(stcb, net)) {
+				return (0);
+			}
+		} else if (error == SCTP_CAUSE_NAT_PORT_COLLIDING_STATE) {
+			SCTPDBG(SCTP_DEBUG_INPUT2, "Received port colliding state, ABORT flags:%x\n",
+			                           abort->ch.chunk_flags);
+			if (sctp_handle_nat_port_colliding_state(stcb, net)) {
 				return (0);
 			}
 		}
@@ -900,6 +917,29 @@ sctp_start_net_timers(struct sctp_tcb *stcb)
 		sctp_chunk_output(stcb->sctp_ep, stcb,
 				  SCTP_OUTPUT_FROM_COOKIE_ACK,
 				  SCTP_SO_NOT_LOCKED);
+	}
+}
+
+static void
+sctp_setup_nat_on_all_unconfirmed_paths(struct sctp_tcb *stcb)
+{
+	struct sctp_nets *net;
+
+	SCTPDBG(SCTP_DEBUG_INPUT2, "%s, numnets: %d\n", __func__, stcb->asoc.numnets);
+
+	TAILQ_FOREACH(net, &stcb->asoc.nets, sctp_next) {
+		SCTPDBG(SCTP_DEBUG_INPUT2, "%s: dest addr: \n", __func__);
+		SCTPDBG_ADDR(SCTP_DEBUG_INPUT2, &net->ro._l_addr.sa);
+		SCTPDBG(SCTP_DEBUG_INPUT2, "state: %d\n", net->dest_state);
+
+		if (net->src_addr_selected) {
+			SCTPDBG(SCTP_DEBUG_INPUT2, "%s: src addr: \n", __func__);
+			SCTPDBG_ADDR(SCTP_DEBUG_INPUT2, &net->ro._s_addr->address.sa);
+		}
+
+		if (net->dest_state & SCTP_ADDR_NOT_IN_ASSOC) {
+			sctp_send_initiate_rj(stcb->sctp_ep, stcb, net, SCTP_SO_NOT_LOCKED);
+		}
 	}
 }
 
@@ -1245,6 +1285,13 @@ sctp_handle_error(struct sctp_chunkhdr *ch,
 				return (0);
 			}
 			break;
+		case SCTP_CAUSE_NAT_PORT_COLLIDING_STATE:
+			SCTPDBG(SCTP_DEBUG_INPUT2, "Received port colliding state, ERROR flags: %x\n",
+			                           ch->chunk_flags);
+			if (sctp_handle_nat_port_colliding_state(stcb, net)) {
+				return (0);
+			}
+			break;
 		case SCTP_CAUSE_STALE_COOKIE:
 			/*
 			 * We only act if we have echoed a cookie and are
@@ -1381,6 +1428,7 @@ sctp_handle_init_ack(struct mbuf *m, int iphlen, int offset,
 			"sctp_handle_init_ack: TCB is null\n");
 		return (-1);
 	}
+
 	/* Only process the INIT-ACK chunk in COOKIE WAIT state.*/
 	if (SCTP_GET_STATE(stcb) == SCTP_STATE_COOKIE_WAIT) {
 		init_ack = &cp->init;
@@ -2270,6 +2318,20 @@ sctp_process_cookie_new(struct mbuf *m, int iphlen, int offset,
 		                       vrf_id, port);
 		return (NULL);
 	}
+
+    if (SCTP_BASE_SYSCTL(sctp_nat_lite)) {
+		struct sctp_laddr *laddr;
+		struct sctp_ifa *ifa = sctp_find_ifa_by_addr(dst, vrf_id, SCTP_ADDR_NOT_LOCKED);
+
+		/* add all local addresses on ep, other than
+		 * the one in use as restricted */
+		LIST_FOREACH(laddr, &inp->sctp_addr_list, sctp_nxt_addr) {
+			if (ifa == laddr->ifa)
+				continue;
+			sctp_add_local_addr_restricted(stcb, laddr->ifa);
+		}
+	}
+
 	asoc = &stcb->asoc;
 	/* get scope variables out of cookie */
 	asoc->scope.ipv4_local_scope = cookie->ipv4_scope;
@@ -2960,6 +3022,7 @@ sctp_handle_cookie_echo(struct mbuf *m, int iphlen, int offset,
 		}
 	}
 	sctp_start_net_timers(*stcb);
+	sctp_setup_nat_on_all_unconfirmed_paths(*stcb);
 	if ((*inp_p)->sctp_flags & SCTP_PCB_FLAGS_TCPTYPE) {
 		if (!had_a_existing_tcb ||
 		    (((*inp_p)->sctp_flags & SCTP_PCB_FLAGS_CONNECTED) == 0)) {
@@ -3185,6 +3248,7 @@ sctp_handle_cookie_ack(struct sctp_cookie_ack_chunk *cp SCTP_UNUSED,
 		SCTPDBG(SCTP_DEBUG_INPUT2, "moving to OPEN state\n");
 		SCTP_SET_STATE(stcb, SCTP_STATE_OPEN);
 		sctp_start_net_timers(stcb);
+		sctp_setup_nat_on_all_unconfirmed_paths(stcb);
 		if (asoc->state & SCTP_STATE_SHUTDOWN_PENDING) {
 			sctp_timer_start(SCTP_TIMER_TYPE_SHUTDOWNGUARD,
 			                 stcb->sctp_ep, stcb, NULL);
@@ -4796,6 +4860,21 @@ sctp_process_control(struct mbuf *m, int iphlen, int *offset, int length,
 			return (NULL);
 		}
 	} else if (ch->chunk_type != SCTP_COOKIE_ECHO) {
+		if (SCTP_BASE_SYSCTL(sctp_nat_lite)) {
+			/* Send ASCONF for all restricted addresses when
+			 * we get an INIT ACK chunk with middle box flag */
+			if (ch->chunk_type == SCTP_INITIATION_ACK) {
+				SCTPDBG(SCTP_DEBUG_INPUT1, "Its an INIT ACK of len:%d vtag:%x\n",
+					ntohs(ch->chunk_length), vtag_in);
+				if (stcb != NULL && netp != NULL && *netp != NULL &&
+					(ch->chunk_flags & SCTP_FROM_MIDDLE_BOX_LITE)) {
+					SCTPDBG(SCTP_DEBUG_INPUT2,
+						"%s: handling INIT-ACK from middle box\n",
+						__func__);
+					sctp_asconf_add_unconfirmed_paths(stcb, *netp);
+				}
+			}
+		}
 		/*
 		 * If there is no stcb, skip the AUTH chunk and process
 		 * later after a stcb is found (to validate the lookup was
@@ -4992,6 +5071,8 @@ sctp_process_control(struct mbuf *m, int iphlen, int *offset, int length,
 				 */
 				if ((netp != NULL) && (*netp != NULL))
 					stcb->asoc.last_control_chunk_from = *netp;
+				else
+					stcb->asoc.last_control_chunk_from = NULL;
 			}
 		}
 #ifdef SCTP_AUDITING_ENABLED
@@ -5500,7 +5581,7 @@ sctp_process_control(struct mbuf *m, int iphlen, int *offset, int length,
 				if (stcb->asoc.asconf_supported == 0) {
 					goto unknown_chunk;
 				}
-				sctp_handle_asconf(m, *offset, src,
+				sctp_handle_asconf(m, *offset, src, dst,
 				                   (struct sctp_asconf_chunk *)ch, stcb, asconf_cnt == 0);
 				asconf_cnt++;
 			}

@@ -82,6 +82,7 @@ struct sctp_rtentry {
 	struct	sockaddr *rt_gateway;	/* value */
 	u_long	rt_flags;		/* up/down?, host/net */
 #endif
+	unsigned int rt_ifindex;
 	struct	ifnet *rt_ifp;		/* the answer: interface to use */
 	struct	ifaddr *rt_ifa;		/* the answer: interface address to use */
 	struct	sctp_rt_metrics_lite rt_rmx;	/* metrics used by rx'ing protocols */

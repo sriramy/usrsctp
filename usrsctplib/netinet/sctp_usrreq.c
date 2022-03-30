@@ -2026,6 +2026,19 @@ sctp_do_connect_x(struct socket *so, struct sctp_inpcb *inp, void *optval,
 		/* Gak! no memory */
 		goto out_now;
 	}
+
+    if (SCTP_BASE_SYSCTL(sctp_nat_lite)) {
+		struct sctp_laddr *laddr;
+
+		/* add all local addresses on ep, other than
+		 * the one in use as restricted */
+		LIST_FOREACH(laddr, &inp->sctp_addr_list, sctp_nxt_addr) {
+			if (laddr == LIST_FIRST(&inp->sctp_addr_list))
+				continue;
+			sctp_add_local_addr_restricted(stcb, laddr->ifa);
+		}
+	}
+
 	SCTP_SET_STATE(stcb, SCTP_STATE_COOKIE_WAIT);
 	/* move to second address */
 	switch (sa->sa_family) {
@@ -8027,6 +8040,19 @@ sctp_connect(struct socket *so, struct mbuf *nam, struct proc *p)
 		/* Gak! no memory */
 		goto out_now;
 	}
+
+    if (SCTP_BASE_SYSCTL(sctp_nat_lite)) {
+		struct sctp_laddr *laddr;
+
+		/* add all local addresses on ep, other than
+		 * the one in use as restricted */
+		LIST_FOREACH(laddr, &inp->sctp_addr_list, sctp_nxt_addr) {
+			if (laddr == LIST_FIRST(&inp->sctp_addr_list))
+				continue;
+			sctp_add_local_addr_restricted(stcb, laddr->ifa);
+		}
+	}
+
 	SCTP_SET_STATE(stcb, SCTP_STATE_COOKIE_WAIT);
 	(void)SCTP_GETTIME_TIMEVAL(&stcb->asoc.time_entered);
 
@@ -8189,6 +8215,19 @@ sctpconn_connect(struct socket *so, struct sockaddr *addr)
 		/* Gak! no memory */
 		goto out_now;
 	}
+
+    if (SCTP_BASE_SYSCTL(sctp_nat_lite)) {
+		struct sctp_laddr *laddr;
+
+		/* add all local addresses on ep, other than
+		 * the one in use as restricted */
+		LIST_FOREACH(laddr, &inp->sctp_addr_list, sctp_nxt_addr) {
+			if (laddr == LIST_FIRST(&inp->sctp_addr_list))
+				continue;
+			sctp_add_local_addr_restricted(stcb, laddr->ifa);
+		}
+	}
+
 	SCTP_SET_STATE(stcb, SCTP_STATE_COOKIE_WAIT);
 	(void)SCTP_GETTIME_TIMEVAL(&stcb->asoc.time_entered);
 

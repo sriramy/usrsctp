@@ -127,6 +127,7 @@ sctp_init_sysctls()
 	SCTP_BASE_SYSCTL(sctp_cmt_use_dac) = SCTPCTL_CMT_USE_DAC_DEFAULT;
 	SCTP_BASE_SYSCTL(sctp_use_cwnd_based_maxburst) = SCTPCTL_CWND_MAXBURST_DEFAULT;
 	SCTP_BASE_SYSCTL(sctp_nat_friendly) = SCTPCTL_NAT_FRIENDLY_DEFAULT;
+	SCTP_BASE_SYSCTL(sctp_nat_lite) = SCTPCTL_NAT_LITE_DEFAULT;
 	SCTP_BASE_SYSCTL(sctp_L2_abc_variable) = SCTPCTL_ABC_L_VAR_DEFAULT;
 	SCTP_BASE_SYSCTL(sctp_mbuf_threshold_count) = SCTPCTL_MAX_CHAINED_MBUFS_DEFAULT;
 	SCTP_BASE_SYSCTL(sctp_do_drain) = SCTPCTL_DO_SCTP_DRAIN_DEFAULT;
@@ -1174,6 +1175,7 @@ SCTP_UINT_SYSCTL(cmt_on_off, sctp_cmt_on_off, SCTPCTL_CMT_ON_OFF)
 SCTP_UINT_SYSCTL(cmt_use_dac, sctp_cmt_use_dac, SCTPCTL_CMT_USE_DAC)
 SCTP_UINT_SYSCTL(cwnd_maxburst, sctp_use_cwnd_based_maxburst, SCTPCTL_CWND_MAXBURST)
 SCTP_UINT_SYSCTL(nat_friendly, sctp_nat_friendly, SCTPCTL_NAT_FRIENDLY)
+SCTP_UINT_SYSCTL(nat_lite, sctp_nat_lite, SCTPCTL_NAT_LITE)
 SCTP_UINT_SYSCTL(abc_l_var, sctp_L2_abc_variable, SCTPCTL_ABC_L_VAR)
 SCTP_UINT_SYSCTL(max_chained_mbufs, sctp_mbuf_threshold_count, SCTPCTL_MAX_CHAINED_MBUFS)
 SCTP_UINT_SYSCTL(do_sctp_drain, sctp_do_drain, SCTPCTL_DO_SCTP_DRAIN)
@@ -1281,6 +1283,7 @@ sctp_sysctl_handle_int(SYSCTL_HANDLER_ARGS)
 		RANGECHK(SCTP_BASE_SYSCTL(sctp_cmt_use_dac), SCTPCTL_CMT_USE_DAC_MIN, SCTPCTL_CMT_USE_DAC_MAX);
 		RANGECHK(SCTP_BASE_SYSCTL(sctp_use_cwnd_based_maxburst), SCTPCTL_CWND_MAXBURST_MIN, SCTPCTL_CWND_MAXBURST_MAX);
 		RANGECHK(SCTP_BASE_SYSCTL(sctp_nat_friendly), SCTPCTL_NAT_FRIENDLY_MIN, SCTPCTL_NAT_FRIENDLY_MAX);
+		RANGECHK(SCTP_BASE_SYSCTL(sctp_nat_lite), SCTPCTL_NAT_LITE_MIN, SCTPCTL_NAT_LITE_MAX);
 		RANGECHK(SCTP_BASE_SYSCTL(sctp_L2_abc_variable), SCTPCTL_ABC_L_VAR_MIN, SCTPCTL_ABC_L_VAR_MAX);
 		RANGECHK(SCTP_BASE_SYSCTL(sctp_mbuf_threshold_count), SCTPCTL_MAX_CHAINED_MBUFS_MIN, SCTPCTL_MAX_CHAINED_MBUFS_MAX);
 		RANGECHK(SCTP_BASE_SYSCTL(sctp_do_drain), SCTPCTL_DO_SCTP_DRAIN_MIN, SCTPCTL_DO_SCTP_DRAIN_MAX);
@@ -1488,6 +1491,10 @@ sysctl_setup_sctp(void)
 	sysctl_add_oid(&sysctl_oid_top, "nat_friendly", CTLTYPE_INT|CTLFLAG_RW,
 	    &SCTP_BASE_SYSCTL(sctp_nat_friendly), 0, sctp_sysctl_handle_int,
 	    SCTPCTL_NAT_FRIENDLY_DESC);
+
+	sysctl_add_oid(&sysctl_oid_top, "nat_lite", CTLTYPE_INT|CTLFLAG_RW,
+	    &SCTP_BASE_SYSCTL(sctp_nat_lite), 0, sctp_sysctl_handle_int,
+	    SCTPCTL_NAT_LITE_DESC);
 
 	sysctl_add_oid(&sysctl_oid_top, "abc_l_var", CTLTYPE_INT|CTLFLAG_RW,
 	    &SCTP_BASE_SYSCTL(sctp_L2_abc_variable), 0, sctp_sysctl_handle_int,

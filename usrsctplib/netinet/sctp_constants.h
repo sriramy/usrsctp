@@ -441,6 +441,7 @@ extern void getwintimeofday(struct timeval *tv);
 /* behave-nat-draft */
 #define SCTP_HAS_NAT_SUPPORT		0xc007
 #define SCTP_NAT_VTAGS			0xc008
+#define SCTP_INIT_RJ			0xc400
 
 /* bits for TOS field */
 #define SCTP_ECT0_BIT		0x02

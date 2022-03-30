@@ -71,6 +71,52 @@ __FBSDID("$FreeBSD$");
  */
 
 /*
+ * cleanup any cached source addresses that may be topologically
+ * incorrect after a new address has been added to this interface.
+ */
+static void
+sctp_asconf_nets_cleanup(struct sctp_tcb *stcb, struct sctp_ifn *ifn)
+{
+	struct sctp_nets *net;
+
+	/*
+	 * Ideally, we want to only clear cached routes and source addresses
+	 * that are topologically incorrect.  But since there is no easy way
+	 * to know whether the newly added address on the ifn would cause a
+	 * routing change (i.e. a new egress interface would be chosen)
+	 * without doing a new routing lookup and source address selection,
+	 * we will (for now) just flush any cached route using a different
+	 * ifn (and cached source addrs) and let output re-choose them during
+	 * the next send on that net.
+	 */
+	TAILQ_FOREACH(net, &stcb->asoc.nets, sctp_next) {
+		/*
+		 * clear any cached route (and cached source address) if the
+		 * route's interface is NOT the same as the address change.
+		 * If it's the same interface, just clear the cached source
+		 * address.
+		 */
+		if (SCTP_ROUTE_HAS_VALID_IFN(&net->ro) &&
+		    ((ifn == NULL) ||
+		     (SCTP_GET_IF_INDEX_FROM_ROUTE(&net->ro) != ifn->ifn_index))) {
+			/* clear any cached route */
+#if defined(__FreeBSD__) && !defined(__Userspace__)
+			RO_NHFREE(&net->ro);
+#else
+			RTFREE(net->ro.ro_rt);
+			net->ro.ro_rt = NULL;
+#endif
+		}
+		/* clear any cached source address */
+		if (net->src_addr_selected) {
+			sctp_free_ifa(net->ro._s_addr);
+			net->ro._s_addr = NULL;
+			net->src_addr_selected = 0;
+		}
+	}
+}
+
+/*
  * ASCONF parameter processing.
  * response_required: set if a reply is required (eg. SUCCESS_REPORT).
  * returns a mbuf to an "error" response parameter or NULL/"success" if ok.
@@ -151,7 +197,8 @@ sctp_asconf_error_response(uint32_t id, uint16_t cause, uint8_t *error_tlv,
 }
 
 static struct mbuf *
-sctp_process_asconf_add_ip(struct sockaddr *src, struct sctp_asconf_paramhdr *aph,
+sctp_process_asconf_add_ip(struct sockaddr *src, struct sockaddr *dst,
+                           struct sctp_asconf_paramhdr *aph,
                            struct sctp_tcb *stcb, int send_hb, int response_required)
 {
 	struct sctp_nets *net;
@@ -251,6 +298,15 @@ sctp_process_asconf_add_ip(struct sockaddr *src, struct sctp_asconf_paramhdr *ap
 		SCTPDBG(SCTP_DEBUG_ASCONF1,
 		        "process_asconf_add_ip: using source addr ");
 		SCTPDBG_ADDR(SCTP_DEBUG_ASCONF1, src);
+	}
+	/* remove from restricted list */
+	if (SCTP_BASE_SYSCTL(sctp_nat_lite)) {
+		struct sctp_ifa *ifa = sctp_find_ifa_by_addr(dst, stcb->asoc.vrf_id, SCTP_ADDR_NOT_LOCKED);
+		if (ifa != NULL) {
+			sctp_del_local_addr_restricted(stcb, ifa);
+			/* clear any cached/topologically incorrect source addresses */
+			sctp_asconf_nets_cleanup(stcb, ifa->ifn_p);
+		}
 	}
 	net = NULL;
 	/* add the address */
@@ -618,7 +674,7 @@ sctp_process_asconf_set_primary(struct sockaddr *src,
  */
 void
 sctp_handle_asconf(struct mbuf *m, unsigned int offset,
-                   struct sockaddr *src,
+                   struct sockaddr *src, struct sockaddr *dst,
 		   struct sctp_asconf_chunk *cp, struct sctp_tcb *stcb,
 		   int first)
 {
@@ -662,7 +718,7 @@ sctp_handle_asconf(struct mbuf *m, unsigned int offset,
 	/* get length of all the param's in the ASCONF */
 	asconf_limit = offset + ntohs(cp->ch.chunk_length);
 	SCTPDBG(SCTP_DEBUG_ASCONF1,
-		"handle_asconf: asconf_limit=%u, sequence=%xh\n",
+		"handle_asconf: asconf_limit=%u, sequence=%x\n",
 		asconf_limit, serial_num);
 
 	if (first) {
@@ -751,7 +807,7 @@ sctp_handle_asconf(struct mbuf *m, unsigned int offset,
 		}
 		switch (param_type) {
 		case SCTP_ADD_IP_ADDRESS:
-			m_result = sctp_process_asconf_add_ip(src, aph, stcb,
+			m_result = sctp_process_asconf_add_ip(src, dst, aph, stcb,
 			    (cnt < SCTP_BASE_SYSCTL(sctp_hb_maxburst)), error);
 			cnt++;
 			break;
@@ -959,52 +1015,6 @@ sctp_asconf_cleanup(struct sctp_tcb *stcb)
 	stcb->asoc.asconf_seq_out_acked = stcb->asoc.asconf_seq_out;
 	/* remove the old ASCONF on our outbound queue */
 	sctp_toss_old_asconf(stcb);
-}
-
-/*
- * cleanup any cached source addresses that may be topologically
- * incorrect after a new address has been added to this interface.
- */
-static void
-sctp_asconf_nets_cleanup(struct sctp_tcb *stcb, struct sctp_ifn *ifn)
-{
-	struct sctp_nets *net;
-
-	/*
-	 * Ideally, we want to only clear cached routes and source addresses
-	 * that are topologically incorrect.  But since there is no easy way
-	 * to know whether the newly added address on the ifn would cause a
-	 * routing change (i.e. a new egress interface would be chosen)
-	 * without doing a new routing lookup and source address selection,
-	 * we will (for now) just flush any cached route using a different
-	 * ifn (and cached source addrs) and let output re-choose them during
-	 * the next send on that net.
-	 */
-	TAILQ_FOREACH(net, &stcb->asoc.nets, sctp_next) {
-		/*
-		 * clear any cached route (and cached source address) if the
-		 * route's interface is NOT the same as the address change.
-		 * If it's the same interface, just clear the cached source
-		 * address.
-		 */
-		if (SCTP_ROUTE_HAS_VALID_IFN(&net->ro) &&
-		    ((ifn == NULL) ||
-		     (SCTP_GET_IF_INDEX_FROM_ROUTE(&net->ro) != ifn->ifn_index))) {
-			/* clear any cached route */
-#if defined(__FreeBSD__) && !defined(__Userspace__)
-			RO_NHFREE(&net->ro);
-#else
-			RTFREE(net->ro.ro_rt);
-			net->ro.ro_rt = NULL;
-#endif
-		}
-		/* clear any cached source address */
-		if (net->src_addr_selected) {
-			sctp_free_ifa(net->ro._s_addr);
-			net->ro._s_addr = NULL;
-			net->src_addr_selected = 0;
-		}
-	}
 }
 
 void
@@ -1657,7 +1667,8 @@ sctp_asconf_process_param_ack(struct sctp_tcb *stcb,
 	case SCTP_ADD_IP_ADDRESS:
 		SCTPDBG(SCTP_DEBUG_ASCONF1,
 			"process_param_ack: added IP address\n");
-		sctp_asconf_addr_mgmt_ack(stcb, aparam->ifa, flag);
+		if (aparam->ifa)
+			sctp_asconf_addr_mgmt_ack(stcb, aparam->ifa, flag);
 		break;
 	case SCTP_DEL_IP_ADDRESS:
 		SCTPDBG(SCTP_DEBUG_ASCONF1,
@@ -2671,8 +2682,6 @@ sctp_compose_asconf(struct sctp_tcb *stcb, int *retlen, int addr_locked)
 			/* won't fit, so we're done with this chunk */
 			break;
 		}
-		/* assign (and store) a correlation id */
-		aa->ap.aph.correlation_id = correlation_id++;
 
 		/*
 		 * fill in address if we're doing a delete this is a simple
@@ -2682,7 +2691,7 @@ sctp_compose_asconf(struct sctp_tcb *stcb, int *retlen, int addr_locked)
 		 * case)
 		 */
 		if (lookup_used == 0 &&
-		    (aa->special_del == 0) &&
+		    (aa->special_del == 0 || aa->only_lookup != 0) &&
 		    aa->ap.aph.ph.param_type == SCTP_DEL_IP_ADDRESS) {
 			struct sctp_ipv6addr_param *lookup;
 			uint16_t p_size, addr_size;
@@ -2703,7 +2712,14 @@ sctp_compose_asconf(struct sctp_tcb *stcb, int *retlen, int addr_locked)
 			memcpy(lookup->addr, &aa->ap.addrp.addr, addr_size);
 			SCTP_BUF_LEN(m_asconf_chk) += SCTP_SIZE32(p_size);
 			lookup_used = 1;
+
+			if (aa->only_lookup)
+				continue;
 		}
+
+		/* assign (and store) a correlation id */
+		aa->ap.aph.correlation_id = htonl(correlation_id++);
+
 		/* copy into current space */
 		memcpy(ptr, &aa->ap, p_length);
 
@@ -3526,6 +3542,86 @@ out:
 		}
 	}
  skip_rest:
+	/* Now we must send the asconf into the queue */
+	sctp_send_asconf(stcb, net, SCTP_ADDR_NOT_LOCKED);
+}
+
+void
+sctp_asconf_add_unconfirmed_paths(struct sctp_tcb *stcb, struct sctp_nets *net)
+{
+	struct sctp_asconf_addr *aa_add, *aa_del;
+
+	if (stcb == NULL) {
+		SCTPDBG(SCTP_DEBUG_ASCONF1, "%s: Missing stcb\n", __func__);
+		return;
+	}
+	if (net == NULL) {
+		SCTPDBG(SCTP_DEBUG_ASCONF1, "%s: Missing net\n", __func__);
+		return;
+	}
+
+	if ((net->dest_state & SCTP_ADDR_NOT_IN_ASSOC) == 0) {
+		SCTPDBG(SCTP_DEBUG_ASCONF1, "%s: net already part of assoc\n", __func__);
+		return;
+	}
+
+	SCTP_MALLOC(aa_add, struct sctp_asconf_addr *, sizeof(struct sctp_asconf_addr), SCTP_M_ASC_ADDR);
+	SCTP_MALLOC(aa_del, struct sctp_asconf_addr *, sizeof(struct sctp_asconf_addr), SCTP_M_ASC_ADDR);
+
+	if (aa_add == NULL || aa_del == NULL) {
+		/* Didn't get memory */
+		SCTPDBG(SCTP_DEBUG_ASCONF1, "%s: failed to get memory!\n", __func__);
+out:
+		if (aa_add != NULL) {
+			SCTP_FREE(aa_add, SCTP_M_ASC_ADDR);
+		}
+		if (aa_del != NULL) {
+			SCTP_FREE(aa_del, SCTP_M_ASC_ADDR);
+		}
+		return;
+	}
+
+	memset(aa_add, 0, sizeof(struct sctp_asconf_addr));
+	memset(aa_del, 0, sizeof(struct sctp_asconf_addr));
+	aa_del->only_lookup = 1;
+	switch (net->ro._l_addr.sa.sa_family) {
+#ifdef INET
+	case AF_INET:
+		aa_add->ap.aph.ph.param_type = SCTP_ADD_IP_ADDRESS;
+		aa_add->ap.aph.ph.param_length = sizeof(struct sctp_asconf_addrv4_param);
+		aa_add->ap.addrp.ph.param_type = SCTP_IPV4_ADDRESS;
+		aa_add->ap.addrp.ph.param_length = sizeof (struct sctp_ipv4addr_param);
+		/* No need to fill the address, we are using 0.0.0.0 */
+		aa_del->ap.aph.ph.param_type = SCTP_DEL_IP_ADDRESS;
+		aa_del->ap.aph.ph.param_length = sizeof(struct sctp_asconf_addrv4_param);
+		aa_del->ap.addrp.ph.param_type = SCTP_IPV4_ADDRESS;
+		aa_del->ap.addrp.ph.param_length = sizeof (struct sctp_ipv4addr_param);
+		/* No need to fill the address, we are using 0.0.0.0 */
+		break;
+#endif
+#ifdef INET6
+	case AF_INET6:
+		aa_add->ap.aph.ph.param_type = SCTP_ADD_IP_ADDRESS;
+		aa_add->ap.aph.ph.param_length = sizeof(struct sctp_asconf_addr_param);
+		aa_add->ap.addrp.ph.param_type = SCTP_IPV6_ADDRESS;
+		aa_add->ap.addrp.ph.param_length = sizeof (struct sctp_ipv6addr_param);
+		/* No need to fill the address, we are using ::0 */
+		aa_del->ap.aph.ph.param_type = SCTP_DEL_IP_ADDRESS;
+		aa_del->ap.aph.ph.param_length = sizeof(struct sctp_asconf_addr_param);
+		aa_del->ap.addrp.ph.param_type = SCTP_IPV6_ADDRESS;
+		aa_del->ap.addrp.ph.param_length = sizeof (struct sctp_ipv6addr_param);
+		/* No need to fill the address, we are using ::0 */
+		break;
+#endif
+	default:
+		SCTPDBG(SCTP_DEBUG_ASCONF1,
+		        "%s: unknown address family %d\n",
+		        __func__, net->ro._l_addr.sa.sa_family);
+		goto out;
+	}
+	TAILQ_INSERT_TAIL(&stcb->asoc.asconf_queue, aa_add, next);
+	TAILQ_INSERT_TAIL(&stcb->asoc.asconf_queue, aa_del, next);
+
 	/* Now we must send the asconf into the queue */
 	sctp_send_asconf(stcb, net, SCTP_ADDR_NOT_LOCKED);
 }

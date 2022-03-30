@@ -689,6 +689,7 @@ struct sctp_asconf_addr {
 	struct sctp_ifa *ifa;	/* save the ifa for add/del ip */
 	uint8_t sent;		/* has this been sent yet? */
 	uint8_t special_del;	/* not to be used in lookup */
+	uint8_t only_lookup;
 };
 
 struct sctp_scoping {

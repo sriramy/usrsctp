@@ -50,7 +50,7 @@ extern void sctp_asconf_cleanup(struct sctp_tcb *);
 extern struct mbuf *sctp_compose_asconf(struct sctp_tcb *, int *, int);
 
 extern void
-sctp_handle_asconf(struct mbuf *, unsigned int, struct sockaddr *,
+sctp_handle_asconf(struct mbuf *, unsigned int, struct sockaddr *, struct sockaddr *,
                    struct sctp_asconf_chunk *, struct sctp_tcb *, int);
 
 extern void
@@ -86,6 +86,10 @@ sctp_net_immediate_retrans(struct sctp_tcb *, struct sctp_nets *);
 extern void
 sctp_asconf_send_nat_state_update(struct sctp_tcb *stcb,
 				  struct sctp_nets *net);
+
+extern void
+sctp_asconf_add_unconfirmed_paths(struct sctp_tcb *stcb,
+                  struct sctp_nets *net);
 
 extern int
 sctp_is_addr_pending(struct sctp_tcb *, struct sctp_ifa *);

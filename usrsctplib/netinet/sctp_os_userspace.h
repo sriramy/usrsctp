@@ -482,6 +482,11 @@ struct sx {int dummy;};
 #include <ifaddrs.h>
 #endif
 
+/* for netlink get route */
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
+#include <arpa/inet.h>
+
 /* for ioctl */
 #include <sys/ioctl.h>
 
@@ -660,7 +665,7 @@ MALLOC_DECLARE(SCTP_M_SOCKOPT);
  */
 /* This could return VOID if the index works but for BSD we provide both. */
 #define SCTP_GET_IFN_VOID_FROM_ROUTE(ro) (void *)ro->ro_rt->rt_ifp
-#define SCTP_GET_IF_INDEX_FROM_ROUTE(ro) 1 /* compiles...  TODO use routing socket to determine */
+#define SCTP_GET_IF_INDEX_FROM_ROUTE(ro) (ro)->ro_rt->rt_ifindex /* compiles...  TODO use routing socket to determine */
 #define SCTP_ROUTE_HAS_VALID_IFN(ro) ((ro)->ro_rt && (ro)->ro_rt->rt_ifp)
 #endif
 
@@ -831,8 +836,144 @@ sctp_hashfreedestroy(void *vhashtbl, struct malloc_type *type, u_long hashmask);
  * routes, output, etc.
  */
 
+#define NL_MSG_BUF_SIZE	8192
+struct nl_req_s {
+  struct nlmsghdr hdr;
+  struct rtmsg rt;
+  char buf[NL_MSG_BUF_SIZE];
+};
+typedef struct nl_req_s nl_req_t;
+
 typedef struct sctp_route	sctp_route_t;
 typedef struct sctp_rtentry	sctp_rtentry_t;
+
+static inline void nl_route_get(sctp_route_t *ro)
+{
+	int fd;
+	struct sockaddr_nl local;  /* our local (user space) side of the communication */
+	struct sockaddr_nl kernel; /* the remote (kernel space) side of the communication */
+
+	struct msghdr rtnl_msg;    /* generic msghdr struct for use with sendmsg */
+	struct iovec io;	     /* IO vector for sendmsg */
+
+	nl_req_t req;              /* structure that describes the rtnetlink packet itself */
+	char reply[NL_MSG_BUF_SIZE]; /* a large buffer to receive lots of link information */
+
+	pid_t pid = getpid();	     /* our process ID to build the correct netlink address */
+
+    struct  rtmsg *route_entry;  /* This struct represent a route entry \
+                                    in the routing table */
+    struct  rtattr *route_attribute; /* This struct contain route \
+                                            attributes (route type) */
+    int route_attribute_len = 0;
+	int dst_ifindex = 0;
+	char dst[INET6_ADDRSTRLEN];
+	memset(&dst, 0, sizeof(dst));
+
+	fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+
+	memset(&local, 0, sizeof(local)); /* fill-in local address information */
+	local.nl_family = AF_NETLINK;
+	local.nl_pid = pid;
+	local.nl_groups = 0;
+	//local.nl_groups = RTMGRP_IPV4_ROUTE;
+
+	if (bind(fd, (struct sockaddr *) &local, sizeof(local)) < 0) {
+		printf("%s: bind error, fd: %d\n", __func__, fd);
+		goto out;
+	}
+
+	memset(&rtnl_msg, 0, sizeof(rtnl_msg));
+	memset(&kernel, 0, sizeof(kernel));
+	memset(&req, 0, sizeof(req));
+
+	kernel.nl_family = AF_NETLINK; /* fill-in kernel address (destination of our message) */
+	kernel.nl_groups = 0;
+
+	req.hdr.nlmsg_type = RTM_GETROUTE;
+	req.hdr.nlmsg_flags = NLM_F_REQUEST;
+	req.hdr.nlmsg_seq = 1;
+	req.hdr.nlmsg_pid = pid;
+	req.rt.rtm_family = ro->ro_dst.sa_family;
+	req.rt.rtm_table = RT_TABLE_MAIN;
+	req.rt.rtm_dst_len = (ro->ro_dst.sa_family == AF_INET ? 32 : 128);
+
+	unsigned int rtl = sizeof(struct rtmsg);
+	struct rtattr *rtap = (struct rtattr *) req.buf;
+	rtap->rta_type = RTA_DST;
+	switch(ro->ro_dst.sa_family) {
+#ifdef INET
+	case AF_INET:
+		memcpy((char*)rtap + sizeof(struct rtattr),
+		  &((struct sockaddr_in *)&ro->ro_dst)->sin_addr,
+		  sizeof(struct in_addr));
+		rtap->rta_len = sizeof(struct rtattr) + sizeof(struct in_addr);
+		break;
+#endif
+#ifdef INET6
+	case AF_INET6:
+		memcpy((char*)rtap + sizeof(struct rtattr),
+		  &((struct sockaddr_in6 *)&ro->ro_dst)->sin6_addr,
+		  sizeof(struct in6_addr));
+		rtap->rta_len = sizeof(struct rtattr) + sizeof(struct in6_addr);
+		break;
+#endif
+	default:
+		break;
+	}
+	rtl += rtap->rta_len;
+
+	req.hdr.nlmsg_len = NLMSG_LENGTH(rtl);
+
+	io.iov_base = &req;
+	io.iov_len = req.hdr.nlmsg_len;
+	rtnl_msg.msg_iov = &io;
+	rtnl_msg.msg_iovlen = 1;
+	rtnl_msg.msg_name = &kernel;
+	rtnl_msg.msg_namelen = sizeof(kernel);
+
+	sendmsg(fd, (struct msghdr *) &rtnl_msg, 0);
+	int len;
+	struct nlmsghdr *msg_ptr;	/* pointer to current message part */
+
+	struct msghdr rtnl_reply;	/* generic msghdr structure for use with recvmsg */
+	struct iovec io_reply;
+
+	memset(&io_reply, 0, sizeof(io_reply));
+	memset(&rtnl_reply, 0, sizeof(rtnl_reply));
+
+	io.iov_base = reply;
+	io.iov_len = NL_MSG_BUF_SIZE;
+	rtnl_reply.msg_iov = &io;
+	rtnl_reply.msg_iovlen = 1;
+	rtnl_reply.msg_name = &kernel;
+	rtnl_reply.msg_namelen = sizeof(kernel);
+
+	len = recvmsg(fd, &rtnl_reply, 0); /* read as much data as fits in the receive buffer */
+	for (msg_ptr = (struct nlmsghdr *) reply; len && NLMSG_OK(msg_ptr, len); msg_ptr = NLMSG_NEXT(msg_ptr, len)) {
+		switch(msg_ptr->nlmsg_type) {
+		case RTM_NEWROUTE:
+			route_entry = (struct rtmsg *) NLMSG_DATA(msg_ptr);
+			route_attribute = (struct rtattr *) RTM_RTA(route_entry);
+			/* Get the route atttibutes len */
+			route_attribute_len = RTM_PAYLOAD(msg_ptr);
+			for ( ; RTA_OK(route_attribute, route_attribute_len); \
+				route_attribute = RTA_NEXT(route_attribute, route_attribute_len)) {
+				if (route_attribute->rta_type == RTA_OIF) {
+					dst_ifindex = *(int*)RTA_DATA(route_attribute);
+				}
+			}
+			break;
+		default:
+			break;
+		}
+	}
+
+out:
+	/* clean up and finish properly */
+	close(fd);
+	ro->ro_rt->rt_ifindex = (dst_ifindex > 0) ? dst_ifindex : 1;
+}
 
 static inline void sctp_userspace_rtalloc(sctp_route_t *ro)
 {
@@ -863,6 +1004,7 @@ static inline void sctp_userspace_rtalloc(sctp_route_t *ro)
 	/* TODO enable the ability to obtain interface index of route for
 	 *  SCTP_GET_IF_INDEX_FROM_ROUTE macro.
 	 */
+	nl_route_get(ro);
 }
 #define SCTP_RTALLOC(ro, vrf_id, fibnum) sctp_userspace_rtalloc((sctp_route_t *)ro)
 

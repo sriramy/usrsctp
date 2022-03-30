@@ -2482,6 +2482,9 @@ sctp_is_addr_in_ep(struct sctp_inpcb *inp, struct sctp_ifa *ifa)
 {
 	struct sctp_laddr *laddr;
 
+	SCTPDBG(SCTP_DEBUG_OUTPUT1, "%s: inp: %p, ifa: %p, check ifname: %s\n",
+		__func__, inp, ifa, ifa->ifn_p->ifn_name);
+
 	if (ifa == NULL)
 		return (0);
 	LIST_FOREACH(laddr, &inp->sctp_addr_list, sctp_nxt_addr) {
@@ -2490,6 +2493,8 @@ sctp_is_addr_in_ep(struct sctp_inpcb *inp, struct sctp_ifa *ifa)
 				__func__);
 			continue;
 		}
+		SCTPDBG(SCTP_DEBUG_OUTPUT1, "%s: ifa: %p, ifname: %s, action: %d\n",
+			__func__, laddr->ifa, laddr->ifa->ifn_p->ifn_name, laddr->action);
 		if ((laddr->ifa == ifa) && laddr->action == 0)
 			/* same pointer */
 			return (1);
@@ -2660,7 +2665,6 @@ sctp_choose_boundspecific_stcb(struct sctp_inpcb *inp,
 	ifn = SCTP_GET_IFN_VOID_FROM_ROUTE(ro);
 	ifn_index = SCTP_GET_IF_INDEX_FROM_ROUTE(ro);
 	sctp_ifn = sctp_find_ifn(ifn, ifn_index);
-
 	/*
 	 * first question, is the ifn we will emit on in our list?  If so,
 	 * we want that one. First we look for a preferred. Second, we go
@@ -5309,16 +5313,19 @@ sctp_send_initiate(struct sctp_inpcb *inp, struct sctp_tcb *stcb, int so_locked)
 	}
 
 	SCTP_BUF_LEN(m) = chunk_len;
-	/* now the addresses */
-	/* To optimize this we could put the scoping stuff
-	 * into a structure and remove the individual uint8's from
-	 * the assoc structure. Then we could just sifa in the
-	 * address within the stcb. But for now this is a quick
-	 * hack to get the address stuff teased apart.
-	 */
-	m_last = sctp_add_addresses_to_i_ia(inp, stcb, &stcb->asoc.scope,
-	                                    m, cnt_inits_to,
-	                                    &padding_len, &chunk_len);
+	m_last = m;
+	if (SCTP_BASE_SYSCTL(sctp_nat_lite) == 0) {
+		/* now the addresses */
+		/* To optimize this we could put the scoping stuff
+		* into a structure and remove the individual uint8's from
+		* the assoc structure. Then we could just sifa in the
+		* address within the stcb. But for now this is a quick
+		* hack to get the address stuff teased apart.
+		*/
+		m_last = sctp_add_addresses_to_i_ia(inp, stcb, &stcb->asoc.scope,
+											m_last, cnt_inits_to,
+											&padding_len, &chunk_len);
+	}
 
 	init->ch.chunk_length = htons(chunk_len);
 	if (padding_len > 0) {
@@ -5327,7 +5334,81 @@ sctp_send_initiate(struct sctp_inpcb *inp, struct sctp_tcb *stcb, int so_locked)
 			return;
 		}
 	}
+
 	SCTPDBG(SCTP_DEBUG_OUTPUT4, "Sending INIT - calls lowlevel_output\n");
+	if ((error = sctp_lowlevel_chunk_output(inp, stcb, net,
+	                                        (struct sockaddr *)&net->ro._l_addr,
+	                                        m, 0, NULL, 0, 0, 0, 0,
+	                                        inp->sctp_lport, stcb->rport, htonl(0),
+	                                        net->port, NULL,
+#if defined(__FreeBSD__) && !defined(__Userspace__)
+	                                        0, 0,
+#endif
+	                                        so_locked))) {
+		SCTPDBG(SCTP_DEBUG_OUTPUT4, "Gak send error %d\n", error);
+		if (error == ENOBUFS) {
+			stcb->asoc.ifp_had_enobuf = 1;
+			SCTP_STAT_INCR(sctps_lowlevelerr);
+		}
+	} else {
+		stcb->asoc.ifp_had_enobuf = 0;
+	}
+	SCTP_STAT_INCR_COUNTER64(sctps_outcontrolchunks);
+	(void)SCTP_GETTIME_TIMEVAL(&net->last_sent_time);
+}
+
+void
+sctp_send_initiate_rj(struct sctp_inpcb *inp, struct sctp_tcb *stcb, struct sctp_nets *net, int so_locked)
+{
+	struct mbuf *m;
+	struct sctp_init_chunk *init;
+	struct sctp_paramhdr *ph;
+	int error;
+	uint16_t chunk_len, parameter_len;
+
+#if defined(__APPLE__) && !defined(__Userspace__)
+	if (so_locked) {
+		sctp_lock_assert(SCTP_INP_SO(inp));
+	} else {
+		sctp_unlock_assert(SCTP_INP_SO(inp));
+	}
+#endif
+	SCTPDBG(SCTP_DEBUG_OUTPUT4, "Sending INIT RJ\n");
+
+	m = sctp_get_mbuf_for_msg(MCLBYTES, 1, M_NOWAIT, 1, MT_DATA);
+	if (m == NULL) {
+		/* No memory, INIT timer will re-attempt. */
+		SCTPDBG(SCTP_DEBUG_OUTPUT4, "Sending INIT RJ - mbuf?\n");
+		return;
+	}
+	chunk_len = (uint16_t)sizeof(struct sctp_init_chunk);
+	/* Now lets put the chunk header in place */
+	init = mtod(m, struct sctp_init_chunk *);
+	/* now the chunk header */
+	init->ch.chunk_type = SCTP_INITIATION;
+	init->ch.chunk_flags = 0;
+	/* fill in later from mbuf we build */
+	init->ch.chunk_length = 0;
+	/* place in my tag */
+	init->init.initiate_tag = htonl(stcb->asoc.my_vtag);
+	/* set up some of the credits. */
+	init->init.a_rwnd = htonl(max(inp->sctp_socket?SCTP_SB_LIMIT_RCV(inp->sctp_socket):0,
+	                              SCTP_MINIMAL_RWND));
+	init->init.num_outbound_streams = htons(stcb->asoc.pre_open_streams);
+	init->init.num_inbound_streams = htons(stcb->asoc.max_inbound_streams);
+	init->init.initial_tsn = htonl(stcb->asoc.init_seq_number);
+
+	/* RJ parameter */
+	parameter_len = (uint16_t)sizeof(struct sctp_paramhdr);
+	ph = (struct sctp_paramhdr *)(mtod(m, caddr_t) + chunk_len);
+	ph->param_type = htons(SCTP_INIT_RJ);
+	ph->param_length = htons(parameter_len);
+	chunk_len += parameter_len;
+
+	init->ch.chunk_length = htons(chunk_len);
+	SCTP_BUF_LEN(m) = chunk_len;
+
+	SCTPDBG(SCTP_DEBUG_OUTPUT4, "Sending INIT RJ - calls lowlevel_output\n");
 	if ((error = sctp_lowlevel_chunk_output(inp, stcb, net,
 	                                        (struct sockaddr *)&net->ro._l_addr,
 	                                        m, 0, NULL, 0, 0, 0, 0,
@@ -5354,7 +5435,8 @@ sctp_arethere_unrecognized_parameters(struct mbuf *in_initpkt,
                                       int param_offset, int *abort_processing,
                                       struct sctp_chunkhdr *cp,
                                       int *nat_friendly,
-                                      int *cookie_found)
+                                      int *cookie_found,
+									  int *rj)
 {
 	/*
 	 * Given a mbuf containing an INIT or INIT-ACK with the param_offset
@@ -5470,6 +5552,16 @@ sctp_arethere_unrecognized_parameters(struct mbuf *in_initpkt,
 		case SCTP_COOKIE_PRESERVE:
 			if (padded_size != sizeof(struct sctp_cookie_perserve_param)) {
 				SCTPDBG(SCTP_DEBUG_OUTPUT1, "Invalid size - error cookie-preserve %d\n", plen);
+				goto invalid_size;
+			}
+			at += padded_size;
+			break;
+		case SCTP_INIT_RJ:
+			if (rj) {
+				*rj = 1;
+			}
+			if (padded_size != sizeof(struct sctp_paramhdr)) {
+				SCTPDBG(SCTP_DEBUG_OUTPUT1, "Invalid size - error rj %d\n", plen);
 				goto invalid_size;
 			}
 			at += padded_size;
@@ -6019,7 +6111,7 @@ sctp_send_initiate_ack(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 	                                               (offset + sizeof(struct sctp_init_chunk)),
 	                                               &abort_flag,
 	                                               (struct sctp_chunkhdr *)init_chk,
-	                                               &nat_friendly, NULL);
+	                                               &nat_friendly, NULL, &abort_flag);
 	if (abort_flag) {
 	do_a_abort:
 		if (op_err == NULL) {
@@ -6577,9 +6669,11 @@ sctp_send_initiate_ack(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
 	scp.ipv4_local_scope = stc.ipv4_scope;
 	scp.local_scope = stc.local_scope;
 	scp.site_scope = stc.site_scope;
-	m_last = sctp_add_addresses_to_i_ia(inp, stcb, &scp, m_last,
-	                                    cnt_inits_to,
-	                                    &padding_len, &chunk_len);
+	if (SCTP_BASE_SYSCTL(sctp_nat_lite) == 0) {
+		m_last = sctp_add_addresses_to_i_ia(inp, stcb, &scp, m_last,
+											cnt_inits_to,
+											&padding_len, &chunk_len);
+	}
 	/* padding_len can only be positive, if no addresses have been added */
 	if (padding_len > 0) {
 		memset(mtod(m, caddr_t) + chunk_len, 0, padding_len);

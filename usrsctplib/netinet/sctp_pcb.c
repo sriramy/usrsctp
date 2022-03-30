@@ -953,13 +953,15 @@ sctp_does_stcb_own_this_addr(struct sctp_tcb *stcb, struct sockaddr *to)
 				continue;
 			}
 			LIST_FOREACH(sctp_ifa, &sctp_ifn->ifalist, next_ifa) {
-				if (sctp_is_addr_restricted(stcb, sctp_ifa) &&
-				    (!sctp_is_addr_pending(stcb, sctp_ifa))) {
-					/* We allow pending addresses, where we
-					 * have sent an asconf-add to be considered
-					 * valid.
-					 */
-					continue;
+				if (SCTP_BASE_SYSCTL(sctp_nat_lite) == 0) {
+					if (sctp_is_addr_restricted(stcb, sctp_ifa) &&
+						(!sctp_is_addr_pending(stcb, sctp_ifa))) {
+						/* We allow pending addresses, where we
+						* have sent an asconf-add to be considered
+						* valid.
+						*/
+						continue;
+					}
 				}
 				if (sctp_ifa->address.sa.sa_family != to->sa_family) {
 					continue;
@@ -1062,13 +1064,15 @@ sctp_does_stcb_own_this_addr(struct sctp_tcb *stcb, struct sockaddr *to)
 				SCTPDBG(SCTP_DEBUG_PCB1, "ifa being deleted\n");
 				continue;
 			}
-			if (sctp_is_addr_restricted(stcb, laddr->ifa) &&
-			    (!sctp_is_addr_pending(stcb, laddr->ifa))) {
-				/* We allow pending addresses, where we
-				 * have sent an asconf-add to be considered
-				 * valid.
-				 */
-				continue;
+			if (SCTP_BASE_SYSCTL(sctp_nat_lite) == 0) {
+				if (sctp_is_addr_restricted(stcb, laddr->ifa) &&
+					(!sctp_is_addr_pending(stcb, laddr->ifa))) {
+					/* We allow pending addresses, where we
+					* have sent an asconf-add to be considered
+					* valid.
+					*/
+					continue;
+				}
 			}
 			if (laddr->ifa->address.sa.sa_family != to->sa_family) {
 				continue;
@@ -2511,7 +2515,7 @@ sctp_findassoc_by_vtag(struct sockaddr *from, struct sockaddr *to, uint32_t vtag
 			}
 			/* RRS:Need toaddr check here */
 			if (sctp_does_stcb_own_this_addr(stcb, to) == 0) {
-			        /* Endpoint does not own this address */
+			    /* Endpoint does not own this address */
 				SCTP_TCB_UNLOCK(stcb);
 				continue;
 			}
@@ -2526,7 +2530,7 @@ sctp_findassoc_by_vtag(struct sockaddr *from, struct sockaddr *to, uint32_t vtag
 			}
 			if (skip_src_check) {
 			conclusive:
-			        if (from) {
+				if (from) {
 					*netp = sctp_findnet(stcb, from);
 				} else {
 					*netp = NULL;	/* unknown */
@@ -2714,8 +2718,8 @@ sctp_findassociation_ep_asconf(struct mbuf *m, int offset,
 	}
 
 	if (zero_address) {
-	        stcb = sctp_findassoc_by_vtag(NULL, dst, ntohl(sh->v_tag), inp_p,
-					      netp, sh->src_port, sh->dest_port, 1, vrf_id, 0);
+		stcb = sctp_findassoc_by_vtag(NULL, dst, ntohl(sh->v_tag), inp_p,
+						netp, sh->src_port, sh->dest_port, 1, vrf_id, 0);
 		if (stcb != NULL) {
 			SCTP_INP_DECR_REF(*inp_p);
 		}
@@ -7573,23 +7577,25 @@ sctp_load_addresses_from_init(struct sctp_tcb *stcb, struct mbuf *m,
 		phdr = sctp_get_next_param(m, offset, &param_buf,
 		                           sizeof(param_buf));
 	}
-	/* Now check to see if we need to purge any addresses */
-	TAILQ_FOREACH_SAFE(net, &stcb->asoc.nets, sctp_next, nnet) {
-		if ((net->dest_state & SCTP_ADDR_NOT_IN_ASSOC) ==
-		    SCTP_ADDR_NOT_IN_ASSOC) {
-			/* This address has been removed from the asoc */
-			/* remove and free it */
-			stcb->asoc.numnets--;
-			TAILQ_REMOVE(&stcb->asoc.nets, net, sctp_next);
-			if (net == stcb->asoc.alternate) {
-				sctp_free_remote_addr(stcb->asoc.alternate);
-				stcb->asoc.alternate = NULL;
+	if ((SCTP_BASE_SYSCTL(sctp_nat_lite) == 0)) {
+		/* Now check to see if we need to purge any addresses */
+		TAILQ_FOREACH_SAFE(net, &stcb->asoc.nets, sctp_next, nnet) {
+			if ((net->dest_state & SCTP_ADDR_NOT_IN_ASSOC) ==
+				SCTP_ADDR_NOT_IN_ASSOC) {
+				/* This address has been removed from the asoc */
+				/* remove and free it */
+				stcb->asoc.numnets--;
+				TAILQ_REMOVE(&stcb->asoc.nets, net, sctp_next);
+				if (net == stcb->asoc.alternate) {
+					sctp_free_remote_addr(stcb->asoc.alternate);
+					stcb->asoc.alternate = NULL;
+				}
+				if (net == stcb->asoc.primary_destination) {
+					stcb->asoc.primary_destination = NULL;
+					sctp_select_primary_destination(stcb);
+				}
+				sctp_free_remote_addr(net);
 			}
-			if (net == stcb->asoc.primary_destination) {
-				stcb->asoc.primary_destination = NULL;
-				sctp_select_primary_destination(stcb);
-			}
-			sctp_free_remote_addr(net);
 		}
 	}
 	if ((stcb->asoc.ecn_supported == 1) &&

@@ -90,6 +90,7 @@ struct sctp_sysctl {
 	uint32_t sctp_cmt_use_dac;
 	uint32_t sctp_use_cwnd_based_maxburst;
 	uint32_t sctp_nat_friendly;
+	uint32_t sctp_nat_lite;
 	uint32_t sctp_L2_abc_variable;
 	uint32_t sctp_mbuf_threshold_count;
 	uint32_t sctp_do_drain;
@@ -414,6 +415,12 @@ struct sctp_sysctl {
 #define SCTPCTL_NAT_FRIENDLY_MIN	0
 #define SCTPCTL_NAT_FRIENDLY_MAX	1
 #define SCTPCTL_NAT_FRIENDLY_DEFAULT	1
+
+/* nat_lite: SCTP NAT lite operation */
+#define SCTPCTL_NAT_LITE_DESC "SCTP NAT lite operation"
+#define SCTPCTL_NAT_LITE_MIN 0
+#define SCTPCTL_NAT_LITE_MAX 1
+#define SCTPCTL_NAT_LITE_DEFAULT 1
 
 /* abc_l_var: SCTP ABC max increase per SACK (L) */
 #define SCTPCTL_ABC_L_VAR_DESC		"SCTP ABC max increase per SACK (L)"
